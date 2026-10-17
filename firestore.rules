@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function signedIn(){return request.auth != null;}
+  function profile(){return get(/databases/$(database)/documents/users/$(request.auth.uid));}
+  function familyMember(fid){return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().data.familyId == fid;}
+  function owner(fid){return familyMember(fid) && get(/databases/$(database)/documents/families/$(fid)).data.ownerUid == request.auth.uid;}
+  match /users/{uid} {
+   allow read: if signedIn() && request.auth.uid == uid;
+   allow create: if signedIn() && request.auth.uid == uid && (getAfter(/databases/$(database)/documents/families/$(request.resource.data.familyId)).data.ownerUid == uid || (request.resource.data.keys().hasAll(["inviteCode"]) && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteCode)).data.usedBy == uid && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteCode)).data.familyId == request.resource.data.familyId)) && request.resource.data.keys().hasOnly(['familyId','email','theme','createdAt','inviteCode']) && request.resource.data.familyId is string && request.resource.data.email == request.auth.token.email && request.resource.data.theme in ['ela','ele'];
+   allow update: if signedIn() && request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['theme']);
+   allow delete: if false;
+  }
+  match /invites/{code} {
+   allow create: if signedIn() && request.resource.data.keys().hasOnly(['familyId','createdBy','expiresAt','usedBy']) && request.resource.data.createdBy == request.auth.uid && familyMember(request.resource.data.familyId) && request.resource.data.usedBy == null && request.resource.data.expiresAt is timestamp;
+   allow read: if signedIn() && (resource.data.createdBy == request.auth.uid || (resource.data.usedBy == null && resource.data.expiresAt > request.time));
+   allow update: if signedIn() && resource.data.usedBy == null && resource.data.expiresAt > request.time && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy']) && request.resource.data.usedBy == request.auth.uid;
+   allow delete: if false;
+  }
+  match /families/{fid} {
+   allow create: if signedIn() && request.resource.data.keys().hasOnly(['ownerUid','createdAt','name']) && request.resource.data.ownerUid == request.auth.uid;
+   allow read: if familyMember(fid);
+   allow update, delete: if false;
+   match /transactions/{tid} {
+    allow read: if familyMember(fid);
+    allow create: if familyMember(fid) && validTx(request.resource.data);
+    allow update: if familyMember(fid) && validTx(request.resource.data) && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt;
+    allow delete: if familyMember(fid);
+   }
+   match /goals/{gid} {
+    allow read: if familyMember(fid);
+    allow create,update: if familyMember(fid) && request.resource.data.keys().hasOnly(['name','targetCents','savedCents']) && request.resource.data.name is string && request.resource.data.targetCents is int && request.resource.data.targetCents > 0 && request.resource.data.savedCents is int && request.resource.data.savedCents >= 0;
+    allow delete: if familyMember(fid);
+   }
+  }
+  function validTx(d){return d.keys().hasOnly(['title','cents','type','date','category','responsible','paid','notes','seriesId','createdBy','createdAt']) && d.title is string && d.title.size() > 0 && d.title.size() <= 160 && d.cents is int && d.cents > 0 && d.cents <= 100000000000 && d.type in ['expense','income'] && d.date is string && d.date.matches('^\\d{4}-\\d{2}-\\d{2}$') && d.category is string && d.responsible is string && d.paid is bool && d.notes is string && d.seriesId is string && d.createdBy == request.auth.uid && d.createdAt is timestamp;}
+  match /{document=**}{allow read,write: if false;}
+ }
+}
+
